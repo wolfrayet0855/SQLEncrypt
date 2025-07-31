@@ -1,4 +1,4 @@
-#Requiremets: dbatools module (https://dbatools.io)and dbatools.library module
+
 # Configuration — EDIT THESE BEFORE RUNNING
 
 # Parent folder containing dbatools modules (dbatools + dbatools.library)
@@ -14,8 +14,10 @@ $CaName              = 'Contoso-EnterpriseCA'
 # Certificate template (must be enabled on that CA)
 $Template            = 'WebServer'
 
-# DNS name(s) for the certificate
-$DnsName             = 'sql01.contoso.com'
+# DNS name(s) for the certificate (FQDN + any additional SANs)
+# Provide as an array, e.g.
+# @('sql01.contoso.com','sql01','alias.contoso.local')
+$DnsNames            = @('sql01.contoso.com')
 
 # Friendly Name for the certificate (defaults to HOSTNAME_SSL)
 $FriendlyName        = "$($env:COMPUTERNAME)_SSL"
@@ -31,7 +33,7 @@ $RenewThresholdDays  = 30
 $ForceEncryption     = $true
 
 # Path for logging (ensure folder exists)
-$LogFile             = 'C:\temp\Automate-SQLTLS.log'
+$LogFile             = 'C:\Temp\Automate-SQLTLS.log'
 #=============================================
 
 function Write-Log {
@@ -101,22 +103,24 @@ try {
     if ($daysLeft -le $RenewThresholdDays) {
         Write-Log "Within threshold ($RenewThresholdDays days); renewing..."
 
-        # 4a) Enroll new cert with FriendlyName, key size & hash
+        # 4a) Enroll new cert with FriendlyName, key size, hash, and SANs
         Write-Log "Requesting new cert from $CaServer\$CaName"
         Write-Log "  Template    : $Template"
-        Write-Log "  DNS         : $DnsName"
+        Write-Log "  DNS names   : $($DnsNames -join ', ')"
         Write-Log "  FriendlyName: $FriendlyName"
         Write-Log "  KeyLength   : $KeyLength"
         Write-Log "  HashAlg     : $HashAlgorithm"
+
         $newCert = New-DbaComputerCertificate `
             -CaServer            $CaServer `
             -CaName              $CaName `
             -CertificateTemplate $Template `
-            -Dns                 $DnsName `
+            -Dns                 $DnsNames `
             -FriendlyName        $FriendlyName `
             -KeyLength           $KeyLength `
             -HashAlgorithm       $HashAlgorithm `
             -ErrorAction Stop
+
         Write-Log "Enrolled cert: $($newCert.Thumbprint)"
 
         # 4b) Bind to SQL (registry + ACLs)

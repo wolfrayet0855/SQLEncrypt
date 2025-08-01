@@ -1,4 +1,3 @@
-
 # Configuration — EDIT THESE BEFORE RUNNING
 
 # Parent folder containing dbatools modules (dbatools + dbatools.library)
@@ -14,13 +13,13 @@ $CaName              = 'Contoso-EnterpriseCA'
 # Certificate template (must be enabled on that CA)
 $Template            = 'WebServer'
 
-# DNS name(s) for the certificate (FQDN + any additional SANs)
+# Additional DNS name(s) for the certificate beyond auto-detected ones (e.g. aliases)
 # Provide as an array, e.g.
-# @('sql01.contoso.com','sql01','alias.contoso.local')
-$DnsNames            = @('sql01.contoso.com')
+# @('alias.contoso.local')
+$AdditionalDnsNames  = @()  # <-- user can add extras here
 
-# Friendly Name for the certificate (defaults to HOSTNAME_SSL)
-$FriendlyName        = "$($env:COMPUTERNAME)_SSL"
+# Friendly Name for the certificate (defaults to HOSTNAME_SSL + date YYYYddMM)
+$FriendlyName        = "$($env:COMPUTERNAME)_SSL$((Get-Date).ToString('yyyyddMM'))"
 
 # Cryptographic settings to satisfy template policy
 $KeyLength           = 2048           # e.g. 2048, 4096
@@ -48,6 +47,35 @@ function Write-Log {
 
 try {
     Write-Log "=== Starting SSL Automation for $SqlInstance ==="
+
+    #
+    # Auto-detect DNS names: always include shortname + FQDN, then append any additional user-specified SANs
+    #
+    $ShortName = $env:COMPUTERNAME
+    $Fqdn = $ShortName
+    try {
+        $resolved = [System.Net.Dns]::GetHostEntry($ShortName)
+        if ($resolved -and $resolved.HostName) {
+            $Fqdn = $resolved.HostName.TrimEnd('.')
+        }
+    } catch {
+        Write-Log "Could not resolve FQDN for '$ShortName'; using shortname only." 'WARN'
+    }
+
+    # Build SAN list: always include both shortname and FQDN, plus any extras
+    $DnsNames = @($ShortName, $Fqdn)
+    if ($AdditionalDnsNames -and $AdditionalDnsNames.Count -gt 0) {
+        $DnsNames += $AdditionalDnsNames
+    }
+
+    # Normalize, trim, and deduplicate (case-insensitive)
+    $DnsNames = $DnsNames |
+                ForEach-Object { ($_ -as [string]).Trim() } |
+                Where-Object { $_ -ne '' } |
+                Sort-Object -Unique -CaseSensitive:$false
+
+    Write-Log "Certificate Common Name (CN): $Fqdn"
+    Write-Log "Final DNS names to request (SANs): $($DnsNames -join ', ')"
 
     #
     # 1) Verify template on CA
@@ -103,23 +131,27 @@ try {
     if ($daysLeft -le $RenewThresholdDays) {
         Write-Log "Within threshold ($RenewThresholdDays days); renewing..."
 
-        # 4a) Enroll new cert with FriendlyName, key size, hash, and SANs
+        # 4a) Enroll new cert with SANs (dbatools; no unsupported -SubjectName)
         Write-Log "Requesting new cert from $CaServer\$CaName"
         Write-Log "  Template    : $Template"
-        Write-Log "  DNS names   : $($DnsNames -join ', ')"
+        Write-Log "  Common Name : $Fqdn"
+        Write-Log "  SANs        : $($DnsNames -join ', ')"
         Write-Log "  FriendlyName: $FriendlyName"
         Write-Log "  KeyLength   : $KeyLength"
         Write-Log "  HashAlg     : $HashAlgorithm"
 
-        $newCert = New-DbaComputerCertificate `
-            -CaServer            $CaServer `
-            -CaName              $CaName `
-            -CertificateTemplate $Template `
-            -Dns                 $DnsNames `
-            -FriendlyName        $FriendlyName `
-            -KeyLength           $KeyLength `
-            -HashAlgorithm       $HashAlgorithm `
-            -ErrorAction Stop
+        $splat = @{
+            CaServer            = $CaServer
+            CaName              = $CaName
+            CertificateTemplate = $Template
+            Dns                 = $DnsNames
+            FriendlyName        = $FriendlyName
+            KeyLength           = $KeyLength
+            HashAlgorithm       = $HashAlgorithm
+            ErrorAction         = 'Stop'
+        }
+
+        $newCert = New-DbaComputerCertificate @splat
 
         Write-Log "Enrolled cert: $($newCert.Thumbprint)"
 
